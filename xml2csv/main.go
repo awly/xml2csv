@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"sync"
 )
 
@@ -15,27 +16,11 @@ func main() {
 		return
 	}
 
-	ch := make(chan record, len(os.Args)-2)
-	wg := &sync.WaitGroup{}
-
-	for i, fname := range os.Args[2:] {
-		fin, err := os.Open(fname)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		defer fin.Close()
-
-		go unmarshal(i, fin, ch, wg)
+	data, err := unmarshalAll(os.Args[2:])
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
-
-	resch := make(chan map[string][]string)
-	go func() {
-		resch<- build(ch, len(ch))
-	}
-	wg.Wait()
-	close(ch)
-	data := <-resch
 
 	fout, err := os.Create(os.Args[1])
 	if err != nil {
@@ -45,19 +30,17 @@ func main() {
 	defer fout.Close()
 	out := csv.NewWriter(fout)
 
-	data := data{}
-	err = xml.NewDecoder(fin).Decode(&data)
-	if err != nil {
+	if err = out.Write(append([]string{""}, os.Args[2:len(os.Args)]...)); err != nil {
 		fmt.Println(err)
 		return
 	}
-
-	if err = out.Write(append([]string{""}, os.Args[1:len(os.Args)-1]...)); err != nil {
-		fmt.Println(err)
-		return
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
 	}
-	for _, r := range data.Records {
-		if err = out.Write([]string{r.Name, r.Val}); err != nil {
+	sort.Strings(keys)
+	for _, k := range keys {
+		if err = out.Write(append([]string{k}, data[k]...)); err != nil {
 			fmt.Println(err)
 			return
 		}
@@ -65,7 +48,29 @@ func main() {
 	out.Flush()
 }
 
-func unmarshalAll(files []string) (map[string][]string)
+func unmarshalAll(files []string) (map[string][]string, error) {
+	ch := make(chan record, len(files))
+	wg := &sync.WaitGroup{}
+
+	for i, fname := range files {
+		fin, err := os.Open(fname)
+		if err != nil {
+			return nil, err
+		}
+		defer fin.Close()
+
+		wg.Add(1)
+		go unmarshal(i, fin, ch, wg)
+	}
+
+	resch := make(chan map[string][]string)
+	go func() {
+		resch <- build(ch, len(files))
+	}()
+	wg.Wait()
+	close(ch)
+	return <-resch, nil
+}
 
 func unmarshal(pos int, in io.Reader, out chan<- record, wg *sync.WaitGroup) {
 	defer wg.Done()
